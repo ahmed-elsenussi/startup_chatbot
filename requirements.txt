@@ -1,0 +1,20 @@
+# Django
+Django>=5.2.4
+
+# Django REST framework
+djangorestframework
+
+# Database driver (for SQL Server)
+pyodbc
+
+# FAISS for vector DB
+faiss-cpu
+
+# NumPy (required for FAISS vectors)
+numpy
+
+# HTTP client for Gemini API calls
+requests
+
+# (Optional) dotenv for environment variables
+python-dotenv
