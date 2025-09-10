@@ -7,8 +7,12 @@ from django.views.decorators.csrf import csrf_exempt
 from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
 import torch
+from django.conf import settings
+import re
 
-# Paths to FAISS index and metadata
+# --------------------------
+# Paths to FAISS index + metadata
+# --------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
 FAISS_INDEX_PATH = BASE_DIR / "generatedData/data/new_company_chunks.index"
 METADATA_FILE = BASE_DIR / "generatedData/data/new_company_chunks_metadata.json"
@@ -23,16 +27,36 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 embed_model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
 
 # Configure Gemini API
-genai.configure(api_key="AIzaSyCQKAOQzagjstrrP9oUsilYU4KEVZnwM2c")
+genai.configure(api_key=settings.GEMINI_API_KEY)  # secure
 gemini_model = genai.GenerativeModel(model_name="gemini-2.0-flash")
 
-# Fixed 5 umbrella types
+# --------------------------
+# Constants
+# --------------------------
 UMBRELLA_TYPES = ["Talent", "Networking", "Growth", "Support", "Funding"]
-
-# Toggle: include empty types or not
 INCLUDE_EMPTY_TYPES = False
 
+NORMAL_RESPONSES = {
+    "hi": "Hello! I'm here to help you find companies that can support your startup idea.",
+    "hello": "Hi there! Tell me about your project and I can suggest compatible companies.",
+    "hey": "Hey! I can help you find companies or institutes suited for your startup idea.",
+    "what is this app about": "This app suggests compatible companies or institutes based on your startup idea description.",
+    "what's up": "I'm here to help you find companies that match your startup needs.",
+    "sup": "Hello! I can suggest companies that might support your project.",
+    "thanks": "You're welcome! Let me know if you want suggestions for companies.",
+    "thank you": "You're welcome! I can help you find compatible companies for your startup.",
+}
 
+# --------------------------
+# Helper: embed + normalize
+# --------------------------
+def embed_and_normalize(text: str) -> np.ndarray:
+    emb = embed_model.encode([text], convert_to_numpy=True).astype("float32")
+    return emb / np.linalg.norm(emb, axis=1, keepdims=True)
+
+# --------------------------
+# API Endpoint
+# --------------------------
 @csrf_exempt
 def suggest_companies(request):
     if request.method != "POST":
@@ -40,87 +64,97 @@ def suggest_companies(request):
 
     try:
         data = json.loads(request.body)
-        user_prompt = data.get("prompt", "").strip()
-        if not user_prompt:
+        user_prompt_raw = data.get("prompt", "").strip()
+        if not user_prompt_raw:
             return JsonResponse({"error": "Prompt is required."}, status=400)
 
-        # Embed user prompt
-        query_embedding = embed_model.encode(
-            user_prompt, convert_to_numpy=True
-        ).astype("float32")
+        user_prompt_lower = user_prompt_raw.lower()
 
-        # Search FAISS for top-k similar chunks
+        # Greeting / exact casual match only
+        for key, reply in NORMAL_RESPONSES.items():
+            if user_prompt_lower == key:
+                return JsonResponse({"message": reply, "types": []})
+
+        # ---------------------------
+        # Always query Gemini, let it decide
+        # ---------------------------
+        # Embed & search FAISS
+        user_emb = embed_and_normalize(user_prompt_raw)
         k = 10
-        D, I = index.search(np.array([query_embedding]), k)
-
-        # Use 'prepared_text' for context
+        D, I = index.search(user_emb.astype("float32"), k)
         context_chunks = [metadata[i]["prepared_text"] for i in I[0]]
         context_text = "\n".join(context_chunks)
 
-        # Build prompt for Gemini (reasoning only, not fields)
+        # Prompt Gemini
         final_prompt = (
             "You are an assistant for suggesting companies based on a user's startup idea.\n\n"
             f"Context:\n{context_text}\n\n"
-            f"User question: {user_prompt}\n\n"
+            f"User question: {user_prompt_raw}\n\n"
             "Task:\n"
-            "Return your answer as JSON with this schema:\n"
+            "Decide what to return:\n"
+            "- If the user is just greeting, casual chatting, or not asking about companies/startups, "
+            "return JSON in this format:\n"
+            "{ \"message\": \"<short helpful message>\", \"types\": [] }\n\n"
+            "- If the user is asking about companies/startups, return structured JSON:\n"
             "{\n"
-            "  'message': '<short summary>',\n"
-            "  'types': [\n"
+            "  \"message\": \"<short summary>\",\n"
+            "  \"types\": [\n"
             "    {\n"
-            "      'type': '<one of: Talent, Networking, Growth, Support, Funding>',\n"
-            "      'companies': [\n"
+            "      \"type\": \"<one of: Talent, Networking, Growth, Support, Funding>\",\n"
+            "      \"companies\": [\n"
             "        {\n"
-            "          'name': '<company name>',\n"
-            "          'reason': '<why relevant>',\n"
-            "          'fields': []  # WILL BE OVERRIDDEN\n"
+            "          \"name\": \"<company name>\",\n"
+            "          \"reason\": \"<why relevant>\",\n"
+            "          \"fields\": []\n"
             "        }\n"
             "      ]\n"
             "    }\n"
             "  ]\n"
             "}\n\n"
             "⚠️ Rules:\n"
-            "- Only provide 'name' and 'reason'. The 'fields' will be added automatically from dataset.\n"
-            "- Do not include anything besides JSON."
+            "- Always return valid JSON only.\n"
+            "- Do not include anything besides JSON.\n"
         )
 
-        # Call Gemini API
         response = gemini_model.generate_content(final_prompt)
 
-        # Parse JSON safely
+        # Try to parse JSON
+        raw_text = response.text.strip()
+        if raw_text.startswith("```"):
+            raw_text = re.sub(r"^```(json)?", "", raw_text)
+            raw_text = raw_text.rstrip("`").strip()
+
         try:
-            raw_text = response.text.strip()
-            if raw_text.startswith("```"):
-                raw_text = raw_text.strip("`")
-                if raw_text.lower().startswith("json"):
-                    raw_text = raw_text[4:].strip()
             structured_data = json.loads(raw_text)
         except Exception:
-            structured_data = {
-                "message": "AI failed to return valid JSON",
-                "raw": response.text,
-            }
+            structured_data = {"message": "AI failed to return valid JSON", "types": []}
 
-        # Replace company 'fields' with metadata values
+        # ---------------------------
+        # Enrich metadata
+        # ---------------------------
         types = structured_data.get("types", [])
         for t in types:
             for company in t.get("companies", []):
-                # Find company in metadata by name
                 meta = next((m for m in metadata if m["name"] == company["name"]), None)
                 if meta:
-                    company["fields"] = meta.get("fieldId", [])
+                    field_val = meta.get("fieldId", [])
+                    if not isinstance(field_val, list):
+                        field_val = [field_val]
+                    company["fields"] = field_val
+                    for key, value in meta.items():
+                        if key not in ["prepared_text", "fieldId", "name"] and value is not None:
+                            company[key] = value
+                    if company.get("logoImageUrl"):
+                        filename = Path(company["logoImageUrl"]).name
+                        company["logoImageUrl"] = request.build_absolute_uri(
+                            f"{settings.STATIC_URL}images/{filename}"
+                        )
 
-        # Handle umbrella types
-        if INCLUDE_EMPTY_TYPES:
-            existing_types = {t["type"] for t in types}
-            for umbrella in UMBRELLA_TYPES:
-                if umbrella not in existing_types:
-                    types.append({"type": umbrella, "companies": []})
-        else:
+        # Remove empty types if configured
+        if not INCLUDE_EMPTY_TYPES:
             types = [t for t in types if t.get("companies")]
 
         structured_data["types"] = types
-
         return JsonResponse(structured_data)
 
     except Exception as e:

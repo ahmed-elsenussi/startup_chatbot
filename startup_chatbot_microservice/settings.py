@@ -23,7 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-_6w*g$yq$59%gn-$0-xhaw_1ed6_%u4cdqk%a4=&&+4&1-i%8$'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
 
@@ -137,10 +137,15 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'  # URL prefix for all static files
+STATICFILES_DIRS = [
+    BASE_DIR / "static",  # points to your static folder
+]
+
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+GEMINI_API_KEY='AIzaSyCQKAOQzagjstrrP9oUsilYU4KEVZnwM2c'
