@@ -23,7 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-_6w*g$yq$59%gn-$0-xhaw_1ed6_%u4cdqk%a4=&&+4&1-i%8$'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 ALLOWED_HOSTS = ["*"]
 
@@ -92,7 +92,7 @@ DATABASES = {
         'ENGINE': 'mssql',
         'NAME': 'EEEI_DB',
         'HOST': 'kamal-pc',
-        'PORT': '',  # leave empty for default 1433
+        'PORT': '',  # default 1433
         'OPTIONS': {
             'driver': 'ODBC Driver 17 for SQL Server',
             'trusted_connection': 'yes', 
